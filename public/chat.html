@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Gemini Chatbot</title>
+    <style>
+      :root {
+        --bg: #0b0f14;
+        --panel: #121823;
+        --muted: #9aa4b2;
+        --text: #e6edf3;
+        --accent: #7c9cff;
+        --accent-2: #16c8a0;
+        --danger: #ff6b6b;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0; background: var(--bg); color: var(--text);
+        font: 14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, Ubuntu;
+        height: 100vh; display: grid; grid-template-rows: auto 1fr auto;
+      }
+      header {
+        display: flex; align-items: center; gap: 12px; padding: 12px 16px;
+        background: var(--panel); border-bottom: 1px solid #1d2736; position: sticky; top: 0; z-index: 2;
+      }
+      header h1 { font-size: 16px; margin: 0 8px 0 0; }
+      .controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+      select, input[type="number"], button {
+        background: #0e1622; color: var(--text); border: 1px solid #2a3748;
+        border-radius: 8px; padding: 8px 10px; outline: none;
+      }
+      button.primary { background: var(--accent); border: none; color: #0b0f14; font-weight: 600; }
+      button.ghost { background: transparent; border: 1px solid #2a3748; }
+      button.danger { background: var(--danger); border: none; color: white; }
+      main { overflow: auto; }
+      .container { max-width: 860px; margin: 0 auto; padding: 20px 16px; }
+      .message { display: grid; grid-template-columns: 36px 1fr; gap: 12px; margin-bottom: 16px; }
+      .avatar { width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; font-weight: 700; }
+      .avatar.user { background: #2a3748; }
+      .avatar.bot { background: #1d2736; }
+      .bubble { background: #0f1520; border: 1px solid #1e2a3a; border-radius: 12px; padding: 12px 14px; white-space: pre-wrap; }
+      .hint { color: var(--muted); font-size: 12px; margin-top: 4px; }
+      footer { padding: 12px 16px; background: var(--panel); border-top: 1px solid #1d2736; }
+      form.composer { max-width: 860px; margin: 0 auto; display: grid; grid-template-columns: 1fr auto; gap: 10px; }
+      textarea {
+        width: 100%; resize: none; height: 60px; max-height: 180px;
+        padding: 12px; border-radius: 12px; background: #0f1520; border: 1px solid #1e2a3a; color: var(--text);
+      }
+      .actions { display: flex; gap: 10px; }
+      .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; clip-path: inset(50%); border: 0; padding: 0; margin: -1px; }
+      .spinner { width: 16px; height: 16px; border: 2px solid #2a3748; border-top-color: var(--accent); border-radius: 50%; animation: spin 1s linear infinite; display: inline-block; }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      a { color: var(--accent-2); text-decoration: none; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Gemini Chatbot</h1>
+      <div class="controls">
+        <label>Model
+          <select id="model">
+            <option value="gemini-1.5-flash" selected>gemini-1.5-flash</option>
+            <option value="gemini-1.5-pro">gemini-1.5-pro</option>
+          </select>
+        </label>
+        <label>Temp
+          <input id="temperature" type="number" step="0.1" min="0" max="2" value="0.7" />
+        </label>
+        <button id="clear" class="ghost" type="button">Clear</button>
+        <button id="stop" class="danger" type="button" disabled>Stop</button>
+      </div>
+      <div class="hint">Server must be started with GEMINI_API_KEY set. Use the Clear button to reset this chat session.</div>
+    </header>
+    <main>
+      <div class="container" id="messages"></div>
+    </main>
+    <footer>
+      <form id="composer" class="composer">
+        <label class="sr-only" for="input">Message</label>
+        <textarea id="input" placeholder="Ask me anything... (Shift+Enter for newline)"></textarea>
+        <div class="actions">
+          <button id="send" class="primary" type="submit">Send</button>
+        </div>
+      </form>
+    </footer>
+    <script>
+      const messagesEl = document.getElementById('messages');
+      const inputEl = document.getElementById('input');
+      const formEl = document.getElementById('composer');
+      const sendBtn = document.getElementById('send');
+      const stopBtn = document.getElementById('stop');
+      const clearBtn = document.getElementById('clear');
+      const modelEl = document.getElementById('model');
+      const temperatureEl = document.getElementById('temperature');
+
+      function uuid() {
+        return ([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g, c =>
+          (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16)
+        );
+      }
+
+      const sessionId = (() => {
+        const key = 'gemini-chat-session-id';
+        let id = localStorage.getItem(key);
+        if (!id) { id = uuid(); localStorage.setItem(key, id); }
+        return id;
+      })();
+
+      function addMessage(role, text) {
+        const wrapper = document.createElement('div');
+        wrapper.className = 'message';
+        const avatar = document.createElement('div');
+        avatar.className = 'avatar ' + (role === 'user' ? 'user' : 'bot');
+        avatar.textContent = role === 'user' ? 'U' : 'G';
+        const bubble = document.createElement('div');
+        bubble.className = 'bubble';
+        bubble.textContent = text || '';
+        wrapper.appendChild(avatar);
+        wrapper.appendChild(bubble);
+        messagesEl.appendChild(wrapper);
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+        return bubble;
+      }
+
+      function setRunning(isRunning) {
+        sendBtn.disabled = isRunning;
+        stopBtn.disabled = !isRunning;
+        inputEl.disabled = isRunning;
+      }
+
+      let abortController = null;
+
+      inputEl.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          formEl.requestSubmit();
+        }
+      });
+
+      clearBtn.addEventListener('click', async () => {
+        try {
+          await fetch('/api/session/reset', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sessionId })
+          });
+          messagesEl.innerHTML = '';
+          addMessage('bot', 'New session started. How can I help?');
+        } catch (e) {
+          console.error(e);
+        }
+      });
+
+      stopBtn.addEventListener('click', () => {
+        if (abortController) {
+          abortController.abort();
+          setRunning(false);
+        }
+      });
+
+      formEl.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const text = inputEl.value.trim();
+        if (!text) return;
+        const model = modelEl.value;
+        const temperature = parseFloat(temperatureEl.value);
+
+        addMessage('user', text);
+        const botBubble = addMessage('bot', '');
+
+        inputEl.value = '';
+        setRunning(true);
+
+        abortController = new AbortController();
+        try {
+          const res = await fetch('/api/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sessionId, message: text, model, temperature }),
+            signal: abortController.signal
+          });
+
+          if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            botBubble.textContent = data.error || ('HTTP ' + res.status);
+            setRunning(false);
+            return;
+          }
+
+          const reader = res.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop();
+            for (const line of lines) {
+              if (!line) continue;
+              try {
+                const frame = JSON.parse(line);
+                if (frame.type === 'content') {
+                  botBubble.textContent += frame.text;
+                  messagesEl.scrollTop = messagesEl.scrollHeight;
+                } else if (frame.type === 'error') {
+                  botBubble.textContent += '\n\n[Error] ' + frame.error;
+                }
+              } catch (_) {
+                // ignore
+              }
+            }
+          }
+        } catch (err) {
+          if (err.name === 'AbortError') {
+            botBubble.textContent += '\n\n[stopped]';
+          } else {
+            botBubble.textContent = 'Error: ' + (err && err.message || 'request failed');
+          }
+        } finally {
+          setRunning(false);
+          abortController = null;
+        }
+      });
+
+      // Seed greeting
+      addMessage('bot', 'Hello! I\'m your Gemini assistant. Ask me anything.');
+    </script>
+  </body>
+  </html>
